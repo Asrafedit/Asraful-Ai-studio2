@@ -11,23 +11,29 @@ app.set("trust proxy", 1);
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
-// Frontend
-const publicDir = path.join(__dirname, "public");
-app.use(express.static(publicDir));
+// ==================================================
+// YOUR INDEX.HTML IS IN THE ROOT DIRECTORY
+// ==================================================
+
+const rootDir = __dirname;
+
+app.use(express.static(rootDir));
 
 
-// ===============================
-// OpenAI Client
-// ===============================
+// ==================================================
+// OPENAI CLIENT
+// ==================================================
+
 function getOpenAIClient() {
   const apiKey = process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
     const error = new Error(
-      "OPENAI_API_KEY is not configured. Add OPENAI_API_KEY in Render Environment Variables."
+      "OPENAI_API_KEY is not configured in Render Environment Variables."
     );
 
     error.code = "MISSING_API_KEY";
+
     throw error;
   }
 
@@ -37,24 +43,31 @@ function getOpenAIClient() {
 }
 
 
-// ===============================
-// Normalize Messages
-// ===============================
+// ==================================================
+// MESSAGE CLEANER
+// ==================================================
+
 function normalizeMessages(messages) {
+
   if (!Array.isArray(messages)) {
     return [];
   }
 
   return messages
-    .filter((message) => message && typeof message === "object")
+    .filter((message) => {
+      return message && typeof message === "object";
+    })
     .map((message) => {
 
-      const role =
-        message.role === "assistant"
-          ? "assistant"
-          : message.role === "system"
-            ? "system"
-            : "user";
+      let role = "user";
+
+      if (message.role === "assistant") {
+        role = "assistant";
+      }
+
+      if (message.role === "system") {
+        role = "system";
+      }
 
       let content = message.content;
 
@@ -94,13 +107,16 @@ function normalizeMessages(messages) {
       };
 
     })
-    .filter((message) => message.content.length > 0);
+    .filter((message) => {
+      return message.content.length > 0;
+    });
 }
 
 
-// ===============================
-// Error Handler
-// ===============================
+// ==================================================
+// ERROR MESSAGE
+// ==================================================
+
 function getErrorMessage(error) {
 
   if (!error) {
@@ -112,51 +128,57 @@ function getErrorMessage(error) {
   }
 
   if (error.status === 401) {
-    return "OpenAI API key was rejected. Check OPENAI_API_KEY in Render Environment Variables.";
+    return "OpenAI API key is invalid or rejected. Check OPENAI_API_KEY in Render.";
   }
 
   if (error.status === 403) {
-    return "OpenAI API access was denied for this project or API key.";
+    return "OpenAI API access was denied for this API key or project.";
   }
 
   if (error.status === 404) {
-    return "The selected OpenAI model was not found or is not available to this API project. Check OPENAI_MODEL in Render.";
+    return "The selected OpenAI model was not found or is unavailable to this API project.";
   }
 
   if (error.status === 429) {
-    return "OpenAI API rate limit or billing/quota limit was reached.";
+    return "OpenAI API quota or rate limit was reached.";
   }
 
   if (error.status >= 500) {
-    return "OpenAI service returned a server error. Please try again.";
+    return "OpenAI server error. Please try again.";
   }
 
   return error.message || "Unknown backend error.";
 }
 
 
-// ===============================
-// Health Check
-// ===============================
+// ==================================================
+// HEALTH CHECK
+// ==================================================
+
 app.get("/api/health", (req, res) => {
 
   res.json({
+
     ok: true,
+
     service: "Asraful AI Studio backend",
-    openaiConfigured: Boolean(
-      process.env.OPENAI_API_KEY
-    ),
+
+    openaiConfigured:
+      Boolean(process.env.OPENAI_API_KEY),
+
     model:
       process.env.OPENAI_MODEL ||
       "gpt-6-luna"
+
   });
 
 });
 
 
-// ===============================
+// ==================================================
 // AI CHAT
-// ===============================
+// ==================================================
+
 app.post("/api/chat", async (req, res) => {
 
   try {
@@ -168,14 +190,19 @@ app.post("/api/chat", async (req, res) => {
     if (messages.length === 0) {
 
       return res.status(400).json({
+
         ok: false,
+
         error:
           "messages must be a non-empty array containing text."
+
       });
 
     }
 
+
     const client = getOpenAIClient();
+
 
     const model =
       process.env.OPENAI_MODEL ||
@@ -189,9 +216,8 @@ app.post("/api/chat", async (req, res) => {
 
         instructions:
           "You are Asraful AI Studio, a helpful AI assistant. " +
-          "Answer clearly, naturally, and accurately. " +
-          "If the user writes in Bengali, reply in Bengali. " +
-          "Do not claim to have performed actions you did not perform.",
+          "Answer clearly, naturally and accurately. " +
+          "If the user writes in Bengali, reply in Bengali.",
 
         input: messages
 
@@ -199,23 +225,24 @@ app.post("/api/chat", async (req, res) => {
 
 
     const text =
-      String(response.output_text || "").trim();
+      String(
+        response.output_text || ""
+      ).trim();
 
 
     if (!text) {
 
       console.error(
-        "OpenAI returned an empty output.",
-        {
-          responseId: response.id,
-          model: model
-        }
+        "OpenAI returned an empty response."
       );
 
       return res.status(502).json({
+
         ok: false,
+
         error:
           "The AI returned an empty response. Please try again."
+
       });
 
     }
@@ -237,13 +264,12 @@ app.post("/api/chat", async (req, res) => {
   } catch (error) {
 
     console.error(
-      "AI chat error:",
+      "AI CHAT ERROR:",
       {
         name: error?.name,
         message: error?.message,
         status: error?.status,
-        code: error?.code,
-        type: error?.type
+        code: error?.code
       }
     );
 
@@ -252,7 +278,8 @@ app.post("/api/chat", async (req, res) => {
 
       ok: false,
 
-      error: getErrorMessage(error)
+      error:
+        getErrorMessage(error)
 
     });
 
@@ -261,9 +288,10 @@ app.post("/api/chat", async (req, res) => {
 });
 
 
-// ===============================
-// API 404
-// ===============================
+// ==================================================
+// UNKNOWN API ROUTE
+// ==================================================
+
 app.use("/api", (req, res) => {
 
   res.status(404).json({
@@ -278,14 +306,19 @@ app.use("/api", (req, res) => {
 });
 
 
-// ===============================
-// Frontend Fallback
-// ===============================
+// ==================================================
+// FRONTEND
+// ==================================================
+
+// IMPORTANT:
+// index.html is in the ROOT directory,
+// NOT public/index.html.
+
 app.get(/.*/, (req, res) => {
 
   res.sendFile(
     path.join(
-      publicDir,
+      rootDir,
       "index.html"
     )
   );
@@ -293,9 +326,10 @@ app.get(/.*/, (req, res) => {
 });
 
 
-// ===============================
+// ==================================================
 // START SERVER
-// ===============================
+// ==================================================
+
 app.listen(
   PORT,
   "0.0.0.0",
@@ -306,8 +340,10 @@ app.listen(
     );
 
     console.log(
-      `OpenAI API key configured: ${
-        Boolean(process.env.OPENAI_API_KEY)
+      `OpenAI API configured: ${
+        Boolean(
+          process.env.OPENAI_API_KEY
+        )
       }`
     );
 
