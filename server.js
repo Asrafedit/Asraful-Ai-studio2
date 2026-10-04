@@ -3,166 +3,149 @@ const path = require("path");
 const OpenAI = require("openai");
 
 const app = express();
-
-// ===============================
-// CONFIG
-// ===============================
 const PORT = process.env.PORT || 10000;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MODEL = process.env.OPENAI_MODEL || "gpt-6-luna";
 
-// ===============================
-// OPENAI CLIENT
-// ===============================
-const openai = OPENAI_API_KEY
-  ? new OpenAI({
-      apiKey: OPENAI_API_KEY,
-    })
+const client = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
 
-// ===============================
-// MIDDLEWARE
-// ===============================
-app.use(express.json({ limit: "2mb" }));
-
-// Serve files from repository root
+app.use(express.json({ limit: "12mb" }));
 app.use(express.static(__dirname));
 
-// ===============================
-// HEALTH CHECK
-// ===============================
-app.get("/api/health", (req, res) => {
+app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
-    service: "Asraful AI Studio backend",
-    openaiConfigured: !!OPENAI_API_KEY,
-    model: MODEL,
+    service: "Asraful AI Studio",
+    keyConfigured: !!client,
+    model: MODEL
   });
 });
 
-// ===============================
-// AI CHAT API
-// ===============================
+function validContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return null;
+  }
+
+  const clean = [];
+
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+
+    if (
+      part.type === "input_text" &&
+      typeof part.text === "string"
+    ) {
+      clean.push({
+        type: "input_text",
+        text: part.text.slice(0, 12000)
+      });
+    }
+
+    if (
+      part.type === "input_image" &&
+      typeof part.image_url === "string"
+    ) {
+      if (
+        !/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(
+          part.image_url
+        )
+      ) {
+        throw new Error("Unsupported image format.");
+      }
+
+      if (part.image_url.length > 11000000) {
+        throw new Error("Image is too large. Use an image under 8 MB.");
+      }
+
+      clean.push({
+        type: "input_image",
+        image_url: part.image_url
+      });
+    }
+  }
+
+  return clean.length ? clean : null;
+}
+
 app.post("/api/chat", async (req, res) => {
   try {
-    // Check API key
-    if (!OPENAI_API_KEY || !openai) {
-      return res.status(500).json({
-        ok: false,
-        error: "OPENAI_API_KEY is not configured on the server.",
+    if (!client) {
+      return res.status(503).json({
+        error: "OPENAI_API_KEY is not configured."
       });
     }
 
-    // Get messages from frontend
-    const messages = req.body?.messages;
-
-    if (!Array.isArray(messages) || messages.length === 0) {
+    if (
+      !Array.isArray(req.body?.messages) ||
+      req.body.messages.length === 0
+    ) {
       return res.status(400).json({
-        ok: false,
-        error: "No messages were provided.",
+        error: "messages must be a non-empty array."
       });
     }
 
-    // Clean and validate messages
-    const cleanMessages = messages
-      .filter((msg) => msg && typeof msg === "object")
-      .map((msg) => ({
-        role:
-          msg.role === "assistant" ||
-          msg.role === "system" ||
-          msg.role === "user"
-            ? msg.role
-            : "user",
-        content:
-          typeof msg.content === "string"
-            ? msg.content
-            : String(msg.content ?? ""),
-      }))
-      .filter((msg) => msg.content.trim().length > 0);
+    const cleanMessages = [];
 
-    if (cleanMessages.length === 0) {
+    for (const item of req.body.messages.slice(-30)) {
+      if (
+        !item ||
+        !["user", "assistant"].includes(item.role)
+      ) {
+        continue;
+      }
+
+      const content = validContent(item.content);
+
+      if (content !== null) {
+        cleanMessages.push({
+          role: item.role,
+          content
+        });
+      }
+    }
+
+    if (!cleanMessages.length) {
       return res.status(400).json({
-        ok: false,
-        error: "No valid message content was provided.",
+        error: "No valid messages were supplied."
       });
     }
 
-    // ===============================
-    // OPENAI RESPONSES API
-    // ===============================
-    const response = await openai.responses.create({
+    const response = await client.responses.create({
       model: MODEL,
-      input: cleanMessages,
+      input: cleanMessages
     });
 
-    // Get generated text
-    const text =
-      typeof response.output_text === "string"
-        ? response.output_text.trim()
-        : "";
+    const answer = response.output_text || "";
 
-    // Make sure we actually received a response
-    if (!text) {
-      return res.status(502).json({
-        ok: false,
-        error: "The AI returned an empty response.",
-        responseId: response.id || null,
-      });
-    }
-
-    // ===============================
-    // IMPORTANT:
-    // The frontend accepts reply/message/content.
-    // We return all aliases for compatibility.
-    // ===============================
-    return res.json({
+    res.json({
       ok: true,
-
-      // Main response
-      text: text,
-
-      // Frontend compatibility
-      reply: text,
-      message: text,
-      content: text,
-
-      // Extra information
+      text: answer,
+      reply: answer,
+      message: answer,
+      content: answer,
       model: MODEL,
-      responseId: response.id || null,
+      responseId: response.id
     });
-  } catch (error) {
-    console.error("OPENAI ERROR:", error);
 
-    const status =
-      Number.isInteger(error?.status) && error.status >= 400
-        ? error.status
-        : 500;
+  } catch (err) {
+    console.error("Chat endpoint error:", err);
 
-    return res.status(status).json({
-      ok: false,
-      error: error?.message || "Unknown backend error.",
-      details: error?.message || "Unknown backend error.",
+    res.status(500).json({
+      error: "AI request failed.",
+      details: err.message || "Unknown server error"
     });
   }
 });
 
-// ===============================
-// FRONTEND FALLBACK
-// ===============================
-// index.html is in the ROOT of the repository,
-// not inside /public.
-app.get(/.*/, (req, res) => {
+app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-// ===============================
-// START SERVER
-// ===============================
 app.listen(PORT, "0.0.0.0", () => {
-  console.log("======================================");
-  console.log("Asraful AI Studio backend started");
-  console.log(`Port: ${PORT}`);
-  console.log(`Model: ${MODEL}`);
-  console.log(`OpenAI configured: ${!!OPENAI_API_KEY}`);
-  console.log("======================================");
+  console.log(`Asraful AI Studio listening on ${PORT}`);
 });
